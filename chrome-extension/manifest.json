@@ -2,10 +2,11 @@
   "manifest_version": 3,
   "name": "YouTube RAG Assistant",
   "version": "1.0.0",
-  "description": "Ask questions about the current YouTube video transcript using the local backend RAG API.",
+  "description": "Ask questions about the current YouTube video transcript using the deployed RAG API.",
   "permissions": ["tabs", "storage"],
   "host_permissions": [
     "https://www.youtube.com/*",
+    "https://*.onrender.com/*",
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*"
   ],

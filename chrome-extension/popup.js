@@ -15,7 +15,7 @@ const statusDot = document.getElementById('statusDot');
 const HISTORY_KEY = 'youtube-rag-history';
 const STUDY_KEY = 'youtube-rag-study-memory';
 const API_BASE_URL_KEY = 'youtube-rag-api-base-url';
-const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
+const DEFAULT_API_BASE_URL = 'https://youtube-rag-assistant-z66y.onrender.com';
 const MAX_HISTORY_ITEMS = 8;
 
 function saveApiBaseUrl(url) {
