@@ -353,10 +353,92 @@ function renderSummary(data) {
   sourcesEl.innerHTML = '<div class="source"><strong>Summary generated from the active video transcript.</strong></div>';
 }
 
+async function fetchTranscriptFromActiveTab(videoId) {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
+    let baseUrl = null;
+
+    if (tab?.id) {
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            try {
+              let player = window.ytInitialPlayerResponse;
+              if (!player) {
+                const scripts = Array.from(document.querySelectorAll('script'));
+                for (const s of scripts) {
+                  if (s.textContent && s.textContent.includes('ytInitialPlayerResponse =')) {
+                    const match = s.textContent.match(/ytInitialPlayerResponse\s*=\s*(\{.*?\});/);
+                    if (match) {
+                      try { player = JSON.parse(match[1]); break; } catch (e) {}
+                    }
+                  }
+                }
+              }
+              const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+              if (!tracks || !tracks.length) return null;
+              const track = tracks.find(t => t.languageCode === 'en' || t.languageCode === 'hi') || tracks[0];
+              return track ? track.baseUrl : null;
+            } catch {
+              return null;
+            }
+          },
+        });
+        baseUrl = results?.[0]?.result;
+      } catch (err) {
+        console.warn('executeScript failed, falling back to fetch:', err);
+      }
+    }
+
+    if (!baseUrl && videoId) {
+      const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+      const pageHtml = await pageRes.text();
+      const match = pageHtml.match(/"captionTracks":(\[.*?\])/);
+      if (match) {
+        const tracks = JSON.parse(match[1]);
+        const track = tracks.find(t => t.languageCode === 'en' || t.languageCode === 'hi') || tracks[0];
+        baseUrl = track?.baseUrl;
+      }
+    }
+
+    if (!baseUrl) return null;
+
+    const capRes = await fetch(baseUrl);
+    const xmlText = await capRes.text();
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+    const nodes = xmlDoc.getElementsByTagName('text');
+
+    const snippets = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      const start = parseFloat(node.getAttribute('start') || '0');
+      const dur = parseFloat(node.getAttribute('dur') || '0');
+      const text = (node.textContent || '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .trim();
+      if (text) {
+        snippets.push({ start, duration: dur, text });
+      }
+    }
+
+    return snippets.length ? snippets : null;
+  } catch (err) {
+    console.warn('fetchTranscriptFromActiveTab error:', err);
+    return null;
+  }
+}
+
 async function askQuestion() {
   const question = questionInput.value.trim();
   if (!question) {
-    answerText.textContent = 'Please enter a question.';
+    answerText.textContent = 'Please enter a question about the video transcript.';
     answerText.classList.add('error-text');
     outputBox.hidden = false;
     sourcesEl.innerHTML = '';
@@ -375,15 +457,18 @@ async function askQuestion() {
   addToHistory(question);
 
   outputBox.hidden = false;
-  answerText.textContent = 'Loading...';
+  answerText.textContent = 'Reading transcript and generating answer...';
   answerText.classList.remove('error-text');
   sourcesEl.innerHTML = '';
 
   try {
     const section = readSectionRange();
+    const snippets = await fetchTranscriptFromActiveTab(videoId);
+
     const body = {
       question,
       video_id: videoId,
+      ...(snippets ? { transcript_snippets: snippets } : {}),
       ...(Object.hasOwn(section, 'start') ? { start_time: section.start } : {}),
       ...(Object.hasOwn(section, 'end') ? { end_time: section.end } : {}),
     };
@@ -416,7 +501,7 @@ async function askQuestion() {
     setStatus(true);
   } catch (error) {
     const message = error && error.message && error.message.toLowerCase().includes('fetch')
-      ? 'Could not reach the local backend. Start it with: .\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 from the backend folder.'
+      ? 'Could not reach backend URL. Please check your backend URL and network connection.'
       : (error.message || 'Something went wrong.');
 
     answerText.textContent = message;
@@ -437,15 +522,20 @@ async function generateSummary() {
   }
 
   outputBox.hidden = false;
-  answerText.textContent = 'Generating summary...';
+  answerText.textContent = 'Reading transcript and generating summary...';
   answerText.classList.remove('error-text');
   sourcesEl.innerHTML = '';
 
   try {
+    const snippets = await fetchTranscriptFromActiveTab(videoId);
+
     const response = await fetch(buildApiUrl('/api/summary'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ video_id: videoId }),
+      body: JSON.stringify({
+        video_id: videoId,
+        ...(snippets ? { transcript_snippets: snippets } : {}),
+      }),
     });
 
     if (!response.ok) {
@@ -458,7 +548,7 @@ async function generateSummary() {
     setStatus(true);
   } catch (error) {
     const message = error && error.message && error.message.toLowerCase().includes('fetch')
-      ? 'Could not reach the local backend. Start it with: .\\.venv\\Scripts\\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 from the backend folder.'
+      ? 'Could not reach backend URL. Please check your backend URL and network connection.'
       : (error.message || 'Summary failed.');
 
     answerText.textContent = message;

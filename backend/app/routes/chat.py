@@ -113,19 +113,37 @@ def _parse_summary_payload(raw_text: str) -> dict:
     return payload
 
 
+def _save_custom_transcript(text: str) -> Path:
+    transcript_path = Path(__file__).resolve().parents[2] / "transcript.txt"
+    transcript_path.write_text(text, encoding="utf-8")
+    return transcript_path
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     try:
-        if request.video_id:
+        transcript = None
+        transcript_path = None
+
+        if request.transcript_snippets:
+            transcript = request.transcript_snippets
+            text = " ".join(s.text for s in request.transcript_snippets)
+            transcript_path = _save_custom_transcript(text)
+        elif request.transcript_text:
+            text = request.transcript_text
+            transcript_path = _save_custom_transcript(text)
+        elif request.video_id:
             transcript = _fetch_transcript(request.video_id)
             transcript_path = _save_video_transcript(request.video_id)
 
-            if request.start_time is not None or request.end_time is not None:
-                section_path = _write_section_transcript(transcript, request.start_time, request.end_time)
-                transcript_path = section_path
+        if transcript and (request.start_time is not None or request.end_time is not None):
+            section_path = _write_section_transcript(transcript, request.start_time, request.end_time)
+            transcript_path = section_path
 
+        if transcript_path:
             clear_vector_store()
             build_vector_store_for_transcript(transcript_path)
+
         result = ask_rag(request.question)
         return ChatResponse(**result)
 
@@ -154,7 +172,17 @@ def chat(request: ChatRequest):
 @router.post("/summary", response_model=SummaryResponse)
 def summarize_video(request: SummaryRequest):
     try:
-        transcript = _fetch_transcript(request.video_id)
+        transcript = None
+        if request.transcript_snippets:
+            transcript = request.transcript_snippets
+        elif request.transcript_text:
+            class TextSnippet:
+                def __init__(self, text):
+                    self.text = text
+                    self.start = 0.0
+            transcript = [TextSnippet(request.transcript_text)]
+        elif request.video_id:
+            transcript = _fetch_transcript(request.video_id)
 
         if not transcript:
             raise ValueError("No transcript found for this video.")

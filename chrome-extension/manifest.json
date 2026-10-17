@@ -3,7 +3,7 @@
   "name": "YouTube RAG Assistant",
   "version": "1.0.0",
   "description": "Ask questions about the current YouTube video transcript using the deployed RAG API.",
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "scripting"],
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://*.onrender.com/*",
