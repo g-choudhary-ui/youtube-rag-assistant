@@ -1,56 +1,65 @@
 # YouTube RAG Assistant
 
-A local Chrome extension + FastAPI backend that answers questions based on the transcript of the currently opened YouTube video.
+A Chrome extension + FastAPI backend that answers questions and generates structured summaries based on the transcript of the currently opened YouTube video. Powered by **Hugging Face Qwen 2.5 (7B-Instruct)** and multilingual semantic embeddings.
 
 ## Features
-- Ask questions about the current YouTube video transcript
-- Per-video chat history stored locally in the browser
-- Saved notes for important concepts and explanations
-- One-click summary generation
-- Optional time-range filtering for transcript sections
-- Relevance-based retrieval using FAISS + embeddings
-- Local RAG pipeline with transcript-aware answer generation
+- **Accurate Q&A**: Answers questions strictly grounded in the video's transcript.
+- **Powered by Qwen**: Uses `Qwen/Qwen2.5-7B-Instruct` via Hugging Face for high accuracy and fast responses.
+- **Smart Summarization**: One-click overview, key takeaways, core concepts, and timestamped highlights.
+- **Time-Range Filtering**: Focus on a specific segment (e.g. from 05:00 to 12:30).
+- **Lightweight & Free Cloud Hosting**: Optimized to run effortlessly on Render's Free tier (< 50MB RAM).
+- **Chrome Extension UI**: Clean popup with real-time video transcript syncing and chat history.
 
-## Project structure
-- `backend/` — FastAPI backend and RAG logic
+## Project Structure
+- `backend/` — FastAPI backend and RAG engine
 - `chrome-extension/` — Chrome extension popup UI and logic
-- `render.yaml` — Render deployment config
-- `backend/requirements.txt` — Python dependencies
+- `render.yaml` — Render deployment blueprint
+- `requirements.txt` — Python dependencies
 
-## Local setup
+## Deployment on Render (100% Free)
 
-1. Open a terminal in the project root.
-2. Start the backend:
+1. **Get your free Hugging Face token**:
+   - Go to [Hugging Face Settings > Tokens](https://huggingface.co/settings/tokens).
+   - Click **Create new token**, select type **Read**, and copy the token (`hf_...`).
 
-```powershell
-cd backend
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
+2. **Deploy on Render**:
+   - Go to [Render Dashboard](https://dashboard.render.com/) and click **New > Web Service**.
+   - Connect this GitHub repository: `https://github.com/g-choudhary-ui/youtube-rag-assistant`.
+   - Settings:
+     - **Runtime**: `Python`
+     - **Root Directory**: `backend`
+     - **Build Command**: `pip install -r requirements.txt`
+     - **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port 10000`
+   - In the **Environment Variables** section, add:
+     - **`HF_TOKEN`**: your Hugging Face token (`hf_...`)
+     - **`PYTHON_VERSION`**: `3.11.9`
+   - Click **Deploy Web Service**.
 
-3. Load the Chrome extension:
-- Open `chrome://extensions`
-- Enable Developer mode
-- Click Load unpacked
-- Select the `chrome-extension` folder
+3. **Connect the Chrome Extension**:
+   - Once deployed, copy your Render URL (e.g., `https://youtube-rag-api.onrender.com`).
+   - Open the Chrome extension popup.
+   - Paste the Render URL into the **Backend URL** input field at the top.
+   - Open any YouTube video with captions and start chatting!
 
-4. Open a YouTube video and click the extension icon.
-5. Ask a question or use the one-click summary feature.
+## Local Development Setup
 
-## Extension configuration
-The popup includes a backend URL field. By default it is:
-
-```text
-http://127.0.0.1:8000
-```
-
-Change this to your deployed backend URL when using a hosted version.
-
-## Deployment
-This project is ready for Render deployment using the included `render.yaml` file.
-
-## Notes
-- The extension works only on real YouTube video pages with captions/transcripts available.
-- For long videos, use the optional start/end timestamp filter to narrow the transcript section.
+1. Open a terminal in `backend/`:
+   ```powershell
+   cd backend
+   pip install -r requirements.txt
+   ```
+2. Create a `.env` file in `backend/`:
+   ```env
+   HF_TOKEN=your_hugging_face_token_here
+   ```
+3. Start the server:
+   ```powershell
+   uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+4. Load the Chrome extension:
+   - Go to `chrome://extensions` in Google Chrome.
+   - Enable **Developer mode** (top right).
+   - Click **Load unpacked** and select the `chrome-extension/` folder.
 
 ## License
 MIT
