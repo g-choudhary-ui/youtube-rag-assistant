@@ -137,12 +137,17 @@ def chat(request: ChatRequest):
 
     except Exception as exc:
         import logging
-
         logging.exception("RAG processing failed")
-
+        err_msg = str(exc)
+        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg:
+            detail = "This YouTube video has no captions/subtitles available. Please try a video with CC/subtitles enabled."
+        elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
+            detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
+        else:
+            detail = f"RAG processing failed: {err_msg}"
         raise HTTPException(
             status_code=500,
-            detail="RAG processing failed. Check the backend terminal.",
+            detail=detail,
         ) from exc
 
 
@@ -222,9 +227,15 @@ def summarize_video(request: SummaryRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         import logging
-
         logging.exception("Summary generation failed")
+        err_msg = str(exc)
+        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg:
+            detail = "This YouTube video has no captions/subtitles available. Please try a video with CC/subtitles enabled."
+        elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
+            detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
+        else:
+            detail = f"Summary generation failed: {err_msg}"
         raise HTTPException(
             status_code=500,
-            detail="Summary generation failed. Check the backend terminal.",
+            detail=detail,
         ) from exc
