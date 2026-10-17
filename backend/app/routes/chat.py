@@ -17,13 +17,16 @@ def _fetch_transcript(video_id: str):
     api = YouTubeTranscriptApi()
 
     try:
+        transcript_list = api.list(video_id)
         try:
-            return api.fetch(video_id, languages=["en"])
+            return transcript_list.find_transcript(["en", "en-US", "en-GB"]).fetch()
         except Exception:
             try:
-                return api.fetch(video_id, languages=["hi"])
+                return transcript_list.find_transcript(["hi"]).fetch()
             except Exception:
-                return api.fetch(video_id)
+                for t in transcript_list:
+                    return t.fetch()
+        raise RuntimeError("No transcript available for this video.")
     except Exception as exc:
         raise RuntimeError(f"Could not fetch transcript for video {video_id}: {exc}") from exc
 
