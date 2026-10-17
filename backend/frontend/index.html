@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube RAG Demo</title>
+    <style>
+      :root {
+        --bg-1: #fdf3f7;
+        --bg-2: #f7dfe8;
+        --panel: rgba(255, 255, 255, 0.68);
+        --panel-strong: rgba(255, 255, 255, 0.78);
+        --card: rgba(255, 255, 255, 0.42);
+        --text: #4b2a38;
+        --muted: #7b5669;
+        --pink: #f29ac1;
+        --pink-strong: #eb7eb6;
+        --pink-soft: #f9dbe9;
+        --rose: #f7c5d9;
+        --shadow: rgba(169, 101, 136, 0.18);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: 'Segoe UI', Arial, sans-serif;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(255,255,255,0.75), transparent 18%),
+          radial-gradient(circle at 80% 12%, rgba(255,255,255,0.65), transparent 16%),
+          linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
+        color: var(--text);
+        min-height: 100vh;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          radial-gradient(circle, rgba(242, 154, 193, 0.9) 1.5px, transparent 2.2px),
+          radial-gradient(circle, rgba(255,255,255,0.7) 1.1px, transparent 1.8px),
+          radial-gradient(circle, rgba(242, 154, 193, 0.75) 1.2px, transparent 2px);
+        background-position: 0 0, 28px 28px, 16px 38px;
+        background-size: 72px 72px;
+        opacity: 0.9;
+      }
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background-image:
+          url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120"><path d="M60 12c8 0 14 6 14 14 0 8-6 14-14 14s-14-6-14-14c0-8 6-14 14-14zm0 38c13 0 24 10 24 23s-11 23-24 23-24-10-24-23 11-23 24-23zm0 60c12 0 22 10 22 22 0 12-10 22-22 22s-22-10-22-22c0-12 10-22 22-22z" fill="%23f7a6ce" fill-opacity="0.35"/></svg>');
+        opacity: 0.5;
+      }
+      .wrap {
+        max-width: 1200px;
+        margin: 40px auto;
+        padding: 20px;
+        position: relative;
+        z-index: 1;
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 2.2fr) minmax(260px, 1fr);
+        gap: 20px;
+      }
+      .card, .history-panel {
+        background: var(--panel);
+        border: 1px solid rgba(255,255,255,0.5);
+        border-radius: 22px;
+        box-shadow: 0 10px 30px var(--shadow);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+      }
+      .card {
+        padding: 28px 26px;
+      }
+      .history-panel {
+        padding: 18px 16px;
+      }
+      .history-panel h3 {
+        margin: 0 0 14px;
+        font-size: 1.05rem;
+        color: var(--text);
+      }
+      .history-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .history-item {
+        background: var(--card);
+        border: 1px solid rgba(242,154,193,.35);
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 14px;
+        color: var(--text);
+        cursor: pointer;
+        transition: transform 0.15s ease, border-color 0.15s ease;
+      }
+      .history-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(235,126,182,.8);
+      }
+      .history-empty {
+        color: var(--muted);
+        font-size: 14px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(2rem, 4vw, 2.7rem);
+        letter-spacing: -0.03em;
+        color: var(--text);
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+      textarea {
+        width: 100%;
+        min-height: 120px;
+        border: 1px solid rgba(235,126,182,.38);
+        border-radius: 16px;
+        background: rgba(255,255,255,0.48);
+        color: var(--text);
+        padding: 16px 14px;
+        font-size: 16px;
+        margin-top: 18px;
+        resize: vertical;
+        box-shadow: inset 0 1px 3px rgba(0,0,0,0.05);
+      }
+      textarea:focus {
+        outline: 2px solid rgba(235,126,182,.5);
+        border-color: rgba(235,126,182,.7);
+      }
+      button {
+        margin-top: 16px;
+        background: linear-gradient(135deg, var(--pink) 0%, var(--pink-strong) 100%);
+        color: #fff;
+        border: none;
+        border-radius: 12px;
+        padding: 12px 18px;
+        font-weight: 700;
+        cursor: pointer;
+        box-shadow: 0 8px 18px rgba(235,126,182,0.35);
+      }
+      .meta {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .answer-box {
+        margin-top: 18px;
+        background: rgba(255,255,255,0.42);
+        border: 1px solid rgba(235,126,182,.25);
+        border-radius: 18px;
+        padding: 18px;
+      }
+      .answer-box strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+      #answerText {
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      .answer-main {
+        padding-bottom: 12px;
+        border-bottom: 1px solid rgba(235,126,182,.2);
+      }
+      .sources {
+        margin-top: 16px;
+      }
+      .sources-header {
+        font-weight: bold;
+        margin-bottom: 10px;
+      }
+      .source {
+        background: rgba(255,255,255,0.32);
+        border-left: 3px solid var(--pink-strong);
+        padding: 10px 12px;
+        border-radius: 10px;
+        margin-top: 8px;
+        color: var(--text);
+      }
+      .source strong {
+        display: inline-block;
+        margin-bottom: 6px;
+      }
+      .error {
+        color: #b4235d;
+      }
+      @media (max-width: 760px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="layout">
+        <div class="card">
+          <h1>YouTube RAG Demo</h1>
+          <p>Ask a question about the transcript and the backend will answer from retrieved evidence.</p>
+
+          <textarea id="question" placeholder="Ask a question about the transcript...">What does the speaker say about women and the glass ceiling?</textarea>
+          <button id="askBtn">Ask</button>
+
+          <div class="meta">The backend first retrieves transcript chunks, filters weak matches, and only answers when the transcript supports the claim.</div>
+
+          <div id="answerBox" class="answer-box" style="display:none;">
+            <div class="answer-main">
+              <strong>Final Answer</strong>
+              <div id="answerText"></div>
+            </div>
+            <div id="sources" class="sources"></div>
+          </div>
+        </div>
+
+        <aside class="history-panel">
+          <h3>Recent Questions</h3>
+          <ul id="historyList" class="history-list"></ul>
+        </aside>
+      </div>
+    </div>
+
+    <script>
+      const questionEl = document.getElementById('question');
+      const askBtn = document.getElementById('askBtn');
+      const answerBox = document.getElementById('answerBox');
+      const answerText = document.getElementById('answerText');
+      const sourcesEl = document.getElementById('sources');
+      const historyList = document.getElementById('historyList');
+      const STORAGE_KEY = 'youtube-rag-history';
+
+      function loadHistory() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+        } catch {
+          return [];
+        }
+      }
+
+      function saveHistory(items) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+      }
+
+      function renderHistory() {
+        const history = loadHistory();
+        historyList.innerHTML = '';
+
+        if (!history.length) {
+          const empty = document.createElement('li');
+          empty.className = 'history-empty';
+          empty.textContent = 'No recent questions yet.';
+          historyList.appendChild(empty);
+          return;
+        }
+
+        history.forEach((item) => {
+          const li = document.createElement('li');
+          li.className = 'history-item';
+          li.textContent = item;
+          li.addEventListener('click', () => {
+            questionEl.value = item;
+            questionEl.focus();
+          });
+          historyList.appendChild(li);
+        });
+      }
+
+      function addToHistory(question) {
+        const cleaned = question.trim();
+        if (!cleaned) return;
+
+        const history = loadHistory();
+        const updated = [cleaned, ...history.filter((item) => item !== cleaned)].slice(0, 8);
+        saveHistory(updated);
+        renderHistory();
+      }
+
+      async function askQuestion() {
+        const question = questionEl.value.trim();
+        if (!question) {
+          answerText.textContent = 'Please enter a question.';
+          answerText.className = 'error';
+          answerBox.style.display = 'block';
+          return;
+        }
+
+        addToHistory(question);
+
+        answerText.textContent = 'Loading...';
+        answerText.className = '';
+        answerBox.style.display = 'block';
+        sourcesEl.innerHTML = '';
+
+        try {
+          const res = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question })
+          });
+
+          const data = await res.json();
+
+          if (!res.ok) {
+            throw new Error(data.detail || 'Request failed');
+          }
+
+          answerText.textContent = data.answer || 'Not mentioned in the transcript.';
+          if (Array.isArray(data.sources) && data.sources.length > 0) {
+            const list = data.sources.map((s, i) => `<div class="source"><strong>Source ${i + 1}</strong><div>${s}</div></div>`).join('');
+            sourcesEl.innerHTML = `<div class="sources-header">Evidence</div>${list}`;
+          } else {
+            sourcesEl.innerHTML = '<div class="source"><strong>No supporting evidence found.</strong></div>';
+          }
+        } catch (err) {
+          answerText.textContent = err.message;
+          answerText.className = 'error';
+          sourcesEl.innerHTML = '';
+        }
+      }
+
+      askBtn.addEventListener('click', askQuestion);
+      questionEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          askQuestion();
+        }
+      });
+
+      renderHistory();
+    </script>
+  </body>
+</html>

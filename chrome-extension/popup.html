@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube RAG Assistant</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div>
+          <p class="eyebrow">YouTube QA</p>
+          <h1>RAG Assistant</h1>
+        </div>
+        <div class="status" id="statusDot" aria-label="status"></div>
+      </header>
+
+      <label class="label" for="question">Question</label>
+      <textarea id="question" rows="5" placeholder="Ask about this video transcript..."></textarea>
+
+      <div class="section-filter">
+        <div class="section-title">Transcript section (optional)</div>
+        <div class="time-row">
+          <input id="startTime" type="number" min="0" step="1" placeholder="Start (sec)" />
+          <input id="endTime" type="number" min="0" step="1" placeholder="End (sec)" />
+        </div>
+      </div>
+
+      <div class="api-config">
+        <div class="output-label">Backend URL</div>
+        <input id="apiUrlInput" type="text" value="http://127.0.0.1:8000" placeholder="http://127.0.0.1:8000" />
+      </div>
+
+      <div class="actions split-actions">
+        <button id="askBtn">Ask</button>
+        <button id="summaryBtn" class="secondary-btn">One-click Summary</button>
+      </div>
+
+      <div class="output" id="outputBox" hidden>
+        <div class="output-label">Final Answer</div>
+        <div id="answerText" class="answer-text"></div>
+
+        <div class="evidence-block">
+          <div class="output-label">Evidence</div>
+          <div id="sources"></div>
+        </div>
+      </div>
+
+      <div class="history-block">
+        <div class="output-label">Video Chat History</div>
+        <ul id="historyList"></ul>
+      </div>
+
+      <div class="notes-block">
+        <div class="output-label">Saved Notes</div>
+        <textarea id="noteInput" rows="3" placeholder="Save a key takeaway or explanation for this video..."></textarea>
+        <div class="notes-actions">
+          <button id="saveNoteBtn" class="secondary-btn">Save note</button>
+        </div>
+        <ul id="notesList"></ul>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

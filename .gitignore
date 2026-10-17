@@ -1,0 +1,12 @@
+.venv/
+backend/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+.DS_Store
+backend/transcript.txt
+backend/data/faiss_index/
+backend/**/__pycache__/
