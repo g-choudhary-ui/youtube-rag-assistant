@@ -90,24 +90,48 @@ def _write_section_transcript(transcript, start_time: float | None = None, end_t
 
 def _parse_summary_payload(raw_text: str) -> dict:
     cleaned = raw_text.strip()
+    # Strip markdown code fences
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned.strip())
 
+    payload: dict = {}
     try:
         payload = json.loads(cleaned)
     except json.JSONDecodeError:
+        # JSON is malformed/truncated — extract fields with regex
+        def _extract_str(key: str, text: str) -> str:
+            m = re.search(rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+            return m.group(1) if m else ""
+
+        def _extract_list(key: str, text: str) -> list[str]:
+            m = re.search(rf'"{key}"\s*:\s*\[([^\]]*)', text)
+            if not m:
+                return []
+            items = re.findall(r'"((?:[^"\\]|\\.)*)"', m.group(1))
+            return items
+
+        overview = _extract_str("overview", cleaned)
+        detailed = _extract_str("detailed_summary", cleaned) or overview
+        takeaways = _extract_list("key_takeaways", cleaned)
+        concepts = _extract_list("important_concepts", cleaned)
+
+        if not overview and not cleaned.startswith("{"):
+            # Plain text fallback
+            overview = cleaned[:400]
+            detailed = cleaned
+
         payload = {
-            "overview": cleaned,
-            "key_takeaways": [],
-            "important_concepts": [],
-            "detailed_summary": cleaned,
+            "overview": overview,
+            "key_takeaways": takeaways,
+            "important_concepts": concepts,
+            "detailed_summary": detailed,
             "timestamps": [],
         }
 
     if not isinstance(payload, dict):
         payload = {
-            "overview": str(cleaned),
+            "overview": str(cleaned)[:400],
             "key_takeaways": [],
             "important_concepts": [],
             "detailed_summary": str(cleaned),
@@ -121,6 +145,7 @@ def _parse_summary_payload(raw_text: str) -> dict:
     payload.setdefault("timestamps", [])
 
     return payload
+
 
 
 def _save_custom_transcript(text: str) -> Path:
@@ -228,24 +253,26 @@ def summarize_video(request: SummaryRequest):
 
         evidence = "\n\n".join(
             f"[{_format_timestamp(_get_snippet_attr(snippet, 'start', 0))}] {_get_snippet_attr(snippet, 'text', '')}"
-            for snippet in transcript[:40]
+            for snippet in transcript[:80]
             if _get_snippet_attr(snippet, 'text', '')
         )
 
         system_prompt = (
-            "You are a concise YouTube transcript summarizer. "
-            "Return valid JSON only with the following keys: "
+            "You are a YouTube video summarizer. "
+            "Analyze the transcript evidence carefully and return a JSON object with these exact keys: "
             "overview, key_takeaways, important_concepts, detailed_summary, timestamps. "
-            "overview must be a 1-3 sentence summary of the video. "
-            "key_takeaways and important_concepts must be arrays of short strings. "
-            "detailed_summary should be a short paragraph summarizing the flow of the lesson. "
-            "timestamps must be a list of objects with 'time' (mm:ss) and 'label' (short summary). "
-            "Use only the transcript evidence and include timestamps when they are available."
+            "Rules: "
+            "overview = 3-5 sentence paragraph describing what the video teaches. "
+            "key_takeaways = array of 4-6 short strings (main points the viewer will learn). "
+            "important_concepts = array of 4-6 short strings (tools, technologies, or ideas mentioned). "
+            "detailed_summary = a paragraph of 5-8 sentences describing the flow and content. "
+            "timestamps = array of up to 6 objects with 'time' (mm:ss) and 'label' (what is discussed). "
+            "Return ONLY the JSON object, nothing else."
         )
         user_prompt = (
-            "Summarize this transcript. Keep it grounded in the evidence and mention the main topic, "
-            "the main ideas, and any practical takeaway.\n\nTRANSCRIPT EVIDENCE:\n"
-            f"{evidence}"
+            "Summarize this YouTube video transcript thoroughly. "
+            "Extract key topics, technologies, and learning points.\n\n"
+            f"TRANSCRIPT:\n{evidence}"
         )
 
         answer = generate_text(
@@ -253,7 +280,7 @@ def summarize_video(request: SummaryRequest):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_new_tokens=500,
+            max_new_tokens=1200,
             json_mode=True,
         )
         payload = _parse_summary_payload(answer)
