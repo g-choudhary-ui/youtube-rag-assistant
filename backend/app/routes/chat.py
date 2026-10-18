@@ -253,7 +253,8 @@ def summarize_video(request: SummaryRequest):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_new_tokens=350,
+            max_new_tokens=500,
+            json_mode=True,
         )
         payload = _parse_summary_payload(answer)
 

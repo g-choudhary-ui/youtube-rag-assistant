@@ -42,9 +42,13 @@ def get_hf_client() -> InferenceClient:
         return _hf_client
 
 
-def _call_gemini_api(prompt: str, max_output_tokens: int = 250) -> str:
-    """Call Gemini REST API directly using requests (no SDK required)."""
+def _call_gemini_api(prompt: str, max_output_tokens: int = 250, json_mode: bool = False) -> str:
+    """Call Gemini REST API directly using requests (no SDK required).
+    Retries up to 3 times on 503 overload errors.
+    """
+    import time
     import requests as req
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError(
@@ -55,23 +59,46 @@ def _call_gemini_api(prompt: str, max_output_tokens: int = 250) -> str:
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{GEMINI_MODEL_ID}:generateContent?key={api_key}"
     )
+    gen_config: dict = {
+        "maxOutputTokens": max_output_tokens,
+        "temperature": 0.2,
+    }
+    if json_mode:
+        gen_config["responseMimeType"] = "application/json"
+
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "maxOutputTokens": max_output_tokens,
-            "temperature": 0.2,
-        },
+        "generationConfig": gen_config,
     }
-    response = req.post(url, json=body, timeout=30)
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Gemini API error {response.status_code}: {response.text[:300]}"
-        )
-    data = response.json()
-    try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError) as exc:
-        raise RuntimeError(f"Unexpected Gemini response format: {data}") from exc
+
+    last_err: Exception = RuntimeError("Gemini API failed after 3 retries")
+    for attempt in range(3):
+        try:
+            response = req.post(url, json=body, timeout=30)
+            if response.status_code == 503:
+                wait = 2 * (attempt + 1)
+                print(f"Gemini 503 overload, retrying in {wait}s (attempt {attempt+1}/3)...")
+                time.sleep(wait)
+                last_err = RuntimeError(f"Gemini API error 503: {response.text[:200]}")
+                continue
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"Gemini API error {response.status_code}: {response.text[:300]}"
+                )
+            data = response.json()
+            try:
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"Unexpected Gemini response format: {data}") from exc
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            last_err = exc
+            time.sleep(2)
+            continue
+
+    raise last_err
+
 
 
 # ============================================================
@@ -277,6 +304,7 @@ def is_summary_question(question: str) -> bool:
 def generate_text(
     messages: list[dict[str, str]],
     max_new_tokens: int = 250,
+    json_mode: bool = False,
 ) -> str:
     """Generate text using Google Gemini REST API (free tier, 1500 req/day)."""
     # Convert OpenAI-style messages to a single prompt for Gemini
@@ -295,7 +323,7 @@ def generate_text(
         full_prompt = "\n".join(system_parts) + "\n\n"
     full_prompt += "\n".join(user_parts)
 
-    return _call_gemini_api(full_prompt, max_output_tokens=max_new_tokens)
+    return _call_gemini_api(full_prompt, max_output_tokens=max_new_tokens, json_mode=json_mode)
 
 
 # ============================================================
