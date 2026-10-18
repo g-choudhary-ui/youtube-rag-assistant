@@ -44,7 +44,7 @@ def get_hf_client() -> InferenceClient:
 
 def _call_gemini_api(prompt: str, max_output_tokens: int = 250, json_mode: bool = False) -> str:
     """Call Gemini REST API directly using requests (no SDK required).
-    Retries up to 3 times on 503 overload errors.
+    Retries up to 3 times on 503/429 errors.
     """
     import time
     import requests as req
@@ -69,17 +69,20 @@ def _call_gemini_api(prompt: str, max_output_tokens: int = 250, json_mode: bool 
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": gen_config,
+        # Disable thinking/chain-of-thought to prevent it leaking into output
+        "thinkingConfig": {"thinkingBudget": 0},
     }
 
     last_err: Exception = RuntimeError("Gemini API failed after 3 retries")
     for attempt in range(3):
         try:
-            response = req.post(url, json=body, timeout=30)
-            if response.status_code == 503:
-                wait = 2 * (attempt + 1)
-                print(f"Gemini 503 overload, retrying in {wait}s (attempt {attempt+1}/3)...")
+            response = req.post(url, json=body, timeout=45)
+            if response.status_code in (503, 429):
+                wait = 3 * (attempt + 1)
+                code = response.status_code
+                print(f"Gemini {code}, retrying in {wait}s (attempt {attempt+1}/3)...")
                 time.sleep(wait)
-                last_err = RuntimeError(f"Gemini API error 503: {response.text[:200]}")
+                last_err = RuntimeError(f"Gemini API error {code}: {response.text[:200]}")
                 continue
             if response.status_code != 200:
                 raise RuntimeError(
@@ -87,7 +90,17 @@ def _call_gemini_api(prompt: str, max_output_tokens: int = 250, json_mode: bool 
                 )
             data = response.json()
             try:
-                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Filter out thought parts (gemini-3.8-flash is a thinking model)
+                parts = data["candidates"][0]["content"]["parts"]
+                text_parts = [
+                    p["text"] for p in parts
+                    if "text" in p and not p.get("thought", False)
+                ]
+                result = " ".join(text_parts).strip()
+                if result:
+                    return result
+                # Fallback: just take all text if filtering removed everything
+                return parts[0].get("text", "").strip()
             except (KeyError, IndexError) as exc:
                 raise RuntimeError(f"Unexpected Gemini response format: {data}") from exc
         except RuntimeError:

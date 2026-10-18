@@ -253,7 +253,7 @@ def summarize_video(request: SummaryRequest):
 
         evidence = "\n\n".join(
             f"[{_format_timestamp(_get_snippet_attr(snippet, 'start', 0))}] {_get_snippet_attr(snippet, 'text', '')}"
-            for snippet in transcript[:80]
+            for snippet in transcript[:50]
             if _get_snippet_attr(snippet, 'text', '')
         )
 
@@ -280,7 +280,7 @@ def summarize_video(request: SummaryRequest):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_new_tokens=1200,
+            max_new_tokens=800,
             json_mode=True,
         )
         payload = _parse_summary_payload(answer)
