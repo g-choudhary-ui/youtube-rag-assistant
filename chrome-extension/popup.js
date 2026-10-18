@@ -188,9 +188,24 @@ function addToHistory(text) {
 function getCurrentVideoId() {
   return new Promise((resolve) => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      const currentUrl = tabs[0]?.url || '';
-      const match = currentUrl.match(/[?&]v=([^&#]+)/) || currentUrl.match(/youtu\.be\/([^?#]+)/);
-      resolve(match ? decodeURIComponent(match[1]) : null);
+      let tab = tabs && tabs[0];
+      const matchUrl = (url) => {
+        if (!url) return null;
+        const m = url.match(/[?&]v=([^&#]+)/) || url.match(/youtu\.be\/([^?#]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+      };
+
+      const directId = matchUrl(tab?.url);
+      if (directId) {
+        resolve(directId);
+        return;
+      }
+
+      // Fallback: search across all windows for a YouTube watch tab
+      chrome.tabs.query({ url: '*://*.youtube.com/watch*' }, (ytTabs) => {
+        const activeYt = ytTabs?.find((t) => t.active) || ytTabs?.[0];
+        resolve(matchUrl(activeYt?.url));
+      });
     });
   });
 }
@@ -407,10 +422,137 @@ function parseTranscriptPayload(rawText) {
   }
 }
 
-// Injected into YouTube tab to fetch captions directly within YouTube's origin and session
+// Injected into YouTube tab to extract captions using multiple strategies
 async function extractTranscriptFromPageContext() {
   try {
-    // 1. Get player response object (movie_player has freshest data across SPA navigations)
+    // Helper function to read transcript segments from the DOM
+    function readDomSegments() {
+      const segs = document.querySelectorAll('ytd-transcript-segment-renderer');
+      if (!segs || segs.length === 0) return null;
+      const items = [];
+      segs.forEach((seg) => {
+        const timeEl = seg.querySelector('.segment-timestamp') || seg.querySelector('[class*="timestamp"]');
+        const textEl = seg.querySelector('.segment-text') || seg.querySelector('.yt-formatted-string') || seg.querySelector('[class*="text"]');
+        const text = (textEl ? textEl.textContent : '').trim();
+        if (text) {
+          const timeStr = timeEl ? timeEl.textContent.trim() : '0:00';
+          const parts = timeStr.split(':').map(Number);
+          let sec = 0;
+          if (parts.length === 2) sec = parts[0] * 60 + parts[1];
+          else if (parts.length === 3) sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+          items.push({ start: sec, duration: 2.0, text });
+        }
+      });
+      return items.length > 0 ? JSON.stringify({
+        events: items.map((it) => ({
+          tStartMs: it.start * 1000,
+          dDurationMs: it.duration * 1000,
+          segs: [{ utf8: it.text }],
+        })),
+      }) : null;
+    }
+
+    // --- Strategy 1: Check if transcript panel is ALREADY open in the DOM ---
+    const existing = readDomSegments();
+    if (existing) return existing;
+
+    // --- Strategy 2: Programmatically trigger "Show transcript" in YouTube DOM ---
+    try {
+      // 1. Expand video description if collapsed
+      const expandBtn = document.querySelector('ytd-text-inline-expander #expand')
+        || document.querySelector('#expand-button')
+        || document.querySelector('#description-inline-expander #expand')
+        || document.querySelector('tp-yt-paper-button#expand')
+        || document.querySelector('#expand');
+      if (expandBtn && expandBtn.offsetParent !== null) {
+        expandBtn.click();
+      }
+
+      // 2. Locate and click the "Show transcript" button
+      let transcriptBtn = document.querySelector('ytd-video-description-transcript-section-renderer button')
+        || document.querySelector('ytd-video-description-transcript-section-renderer yt-button-shape button')
+        || document.querySelector('button[aria-label*="transcript" i]')
+        || document.querySelector('button[aria-label*="Transcript" i]');
+
+      if (!transcriptBtn) {
+        const allBtns = Array.from(document.querySelectorAll('button, yt-button-shape'));
+        transcriptBtn = allBtns.find((b) => (b.textContent || '').toLowerCase().includes('transcript'));
+      }
+
+      if (transcriptBtn) {
+        transcriptBtn.click();
+        // Poll every 100ms up to 2.5 seconds for transcript segments to render
+        for (let i = 0; i < 25; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          const triggered = readDomSegments();
+          if (triggered) return triggered;
+        }
+      }
+    } catch (e) {
+      console.warn('DOM transcript button trigger error:', e);
+    }
+
+    // --- Strategy 3: Innertube get_transcript in authenticated page context ---
+    try {
+      const apiKey = window.ytcfg?.get?.('INNERTUBE_API_KEY');
+      const context = window.ytcfg?.get?.('INNERTUBE_CONTEXT');
+
+      let params = null;
+      function findParams(obj, depth = 0) {
+        if (!obj || typeof obj !== 'object' || params || depth > 8) return;
+        if (obj.getTranscriptEndpoint?.params) {
+          params = obj.getTranscriptEndpoint.params;
+          return;
+        }
+        for (const k of Object.keys(obj)) {
+          findParams(obj[k], depth + 1);
+        }
+      }
+      if (window.ytInitialData) {
+        findParams(window.ytInitialData);
+      }
+
+      if (apiKey && context && params) {
+        const res = await fetch(`/youtubei/v1/get_transcript?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ context, params }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const actions = data?.actions || [];
+          const items = [];
+          for (const a of actions) {
+            const segs = a?.updateEngagementPanelAction?.content?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body?.transcriptSegmentListRenderer?.initialSegments;
+            if (Array.isArray(segs)) {
+              for (const s of segs) {
+                const r = s.transcriptSegmentRenderer;
+                if (r) {
+                  const start = parseInt(r.startMs || '0', 10) / 1000.0;
+                  const text = (r.snippet?.runs || []).map((x) => x.text || '').join('').trim();
+                  if (text) {
+                    items.push({ start, duration: 2.0, text });
+                  }
+                }
+              }
+            }
+          }
+          if (items.length > 0) {
+            return JSON.stringify({
+              events: items.map((it) => ({
+                tStartMs: it.start * 1000,
+                dDurationMs: it.duration * 1000,
+                segs: [{ utf8: it.text }],
+              })),
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Innertube get_transcript error:', e);
+    }
+
+    // --- Strategy 4: Player response captionTracks ---
     let playerResponse = null;
     const playerEl = document.getElementById('movie_player');
     if (playerEl && typeof playerEl.getPlayerResponse === 'function') {
@@ -422,54 +564,14 @@ async function extractTranscriptFromPageContext() {
       playerResponse = window.ytInitialPlayerResponse;
     }
 
-    // 2. Extract caption tracks
     let tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-    // 3. Fallback: search script tags with balanced bracket matching
-    if (!tracks || !tracks.length) {
-      const scripts = document.querySelectorAll('script');
-      for (const s of scripts) {
-        const text = s.textContent || '';
-        const marker = '"captionTracks":';
-        const idx = text.indexOf(marker);
-        if (idx !== -1) {
-          const start = text.indexOf('[', idx);
-          if (start !== -1) {
-            let depth = 0;
-            let inStr = false;
-            let esc = false;
-            for (let i = start; i < text.length; i++) {
-              const c = text[i];
-              if (esc) { esc = false; continue; }
-              if (c === '\\') { esc = true; continue; }
-              if (c === '"') { inStr = !inStr; continue; }
-              if (!inStr) {
-                if (c === '[') depth++;
-                else if (c === ']') {
-                  depth--;
-                  if (depth === 0) {
-                    try {
-                      tracks = JSON.parse(text.substring(start, i + 1));
-                    } catch (e) {}
-                    break;
-                  }
-                }
-              }
-            }
-          }
-        }
-        if (tracks && tracks.length) break;
-      }
-    }
-
-    // 4. If caption tracks found, fetch the timedtext data inside the page
     if (tracks && tracks.length) {
       const track = tracks.find((t) => (t.languageCode || '').startsWith('en'))
                  || tracks.find((t) => (t.languageCode || '').startsWith('hi'))
                  || tracks[0];
 
       if (track && track.baseUrl) {
-        // Try standard timedtext fetch (same-origin, includes cookies)
         try {
           const res = await fetch(track.baseUrl);
           if (res.ok) {
@@ -480,7 +582,6 @@ async function extractTranscriptFromPageContext() {
           }
         } catch (e) {}
 
-        // Fallback: try with &fmt=json3
         try {
           const jsonUrl = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
           const res2 = await fetch(jsonUrl);
@@ -494,33 +595,6 @@ async function extractTranscriptFromPageContext() {
       }
     }
 
-    // 5. Fallback: check if the YouTube transcript panel is open in the DOM
-    const segs = document.querySelectorAll('ytd-transcript-segment-renderer');
-    if (segs && segs.length > 0) {
-      const items = [];
-      segs.forEach((seg) => {
-        const timeEl = seg.querySelector('.segment-timestamp');
-        const textEl = seg.querySelector('.segment-text');
-        if (textEl && textEl.textContent.trim()) {
-          const timeStr = timeEl ? timeEl.textContent.trim() : '0:00';
-          const parts = timeStr.split(':').map(Number);
-          let sec = 0;
-          if (parts.length === 2) sec = parts[0] * 60 + parts[1];
-          else if (parts.length === 3) sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
-          items.push({ start: sec, duration: 2.0, text: textEl.textContent.trim() });
-        }
-      });
-      if (items.length > 0) {
-        return JSON.stringify({
-          events: items.map((it) => ({
-            tStartMs: it.start * 1000,
-            dDurationMs: it.duration * 1000,
-            segs: [{ utf8: it.text }],
-          })),
-        });
-      }
-    }
-
     return null;
   } catch (err) {
     return null;
@@ -530,11 +604,17 @@ async function extractTranscriptFromPageContext() {
 async function fetchTranscriptFromActiveTab(videoId) {
   try {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs[0] || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
+    let tab = tabs && tabs[0];
+
+    // If active tab is not YouTube watch page, query YouTube watch tabs directly
+    if (!tab?.url || !tab.url.includes('youtube.com/watch')) {
+      const ytTabs = await chrome.tabs.query({ url: '*://*.youtube.com/watch*' });
+      tab = ytTabs?.find((t) => t.active) || ytTabs?.[0] || tab;
+    }
 
     let rawPayload = null;
 
-    // Strategy 1: Execute in MAIN world (access to movie_player & window.ytInitialPlayerResponse)
+    // Strategy 1: Execute in MAIN world (has access to YouTube's player & session)
     if (tab && tab.id) {
       try {
         const results = await chrome.scripting.executeScript({
@@ -558,55 +638,6 @@ async function fetchTranscriptFromActiveTab(videoId) {
         rawPayload = results?.[0]?.result;
       } catch (err) {
         console.warn('executeScript in isolated world failed:', err);
-      }
-    }
-
-    // Strategy 3: Direct fetch from extension if scripting failed
-    if (!rawPayload && videoId) {
-      try {
-        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-        if (pageRes.ok) {
-          const html = await pageRes.text();
-          const marker = '"captionTracks":';
-          const idx = html.indexOf(marker);
-          if (idx !== -1) {
-            const start = html.indexOf('[', idx);
-            if (start !== -1) {
-              let depth = 0;
-              let inStr = false;
-              let esc = false;
-              for (let i = start; i < html.length; i++) {
-                const c = html[i];
-                if (esc) { esc = false; continue; }
-                if (c === '\\') { esc = true; continue; }
-                if (c === '"') { inStr = !inStr; continue; }
-                if (!inStr) {
-                  if (c === '[') depth++;
-                  else if (c === ']') {
-                    depth--;
-                    if (depth === 0) {
-                      try {
-                        const tracks = JSON.parse(html.substring(start, i + 1));
-                        const track = tracks.find((t) => (t.languageCode || '').startsWith('en'))
-                                   || tracks.find((t) => (t.languageCode || '').startsWith('hi'))
-                                   || tracks[0];
-                        if (track && track.baseUrl) {
-                          const capRes = await fetch(track.baseUrl);
-                          if (capRes.ok) {
-                            rawPayload = await capRes.text();
-                          }
-                        }
-                      } catch (e) {}
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Direct YouTube fetch fallback failed:', err);
       }
     }
 
@@ -653,7 +684,7 @@ async function askQuestion() {
     if (!snippets || snippets.length === 0) {
       const isCloudHost = !buildApiUrl('').includes('localhost') && !buildApiUrl('').includes('127.0.0.1');
       if (isCloudHost) {
-        throw new Error('Could not extract transcript from this video. Please make sure subtitles/captions (CC) are available on this video and refresh the YouTube tab.');
+        throw new Error("Could not extract transcript automatically. On the YouTube page, please click '...more' in the video description and click 'Show transcript', then click Ask again.");
       }
       answerText.textContent = '⚠️ Could not extract transcript client-side. Attempting server-side fetch...';
     } else {
@@ -728,7 +759,7 @@ async function generateSummary() {
     if (!snippets || snippets.length === 0) {
       const isCloudHost = !buildApiUrl('').includes('localhost') && !buildApiUrl('').includes('127.0.0.1');
       if (isCloudHost) {
-        throw new Error('Could not extract transcript from this video. Please make sure subtitles/captions (CC) are available on this video and refresh the YouTube tab.');
+        throw new Error("Could not extract transcript automatically. On the YouTube page, please click '...more' in the video description and click 'Show transcript', then click One-click Summary again.");
       }
       answerText.textContent = '⚠️ Could not extract transcript client-side. Attempting server-side fetch...';
     } else {
