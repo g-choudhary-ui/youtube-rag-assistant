@@ -242,29 +242,54 @@ def is_summary_question(question: str) -> bool:
 # QWEN GENERATION VIA HUGGING FACE INFERENCE API
 # ============================================================
 
+FALLBACK_MODELS = [
+    LLM_MODEL_ID,
+    "meta-llama/Llama-3.2-3B-Instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    "google/gemma-2-2b-it",
+    "HuggingFaceH4/zephyr-7b-beta",
+    "microsoft/Phi-3.5-mini-instruct",
+]
+
+
 def generate_text(
     messages: list[dict[str, str]],
     max_new_tokens: int = 250,
 ) -> str:
-    """Generate text with Qwen using Hugging Face Inference API."""
+    """Generate text using Hugging Face Inference API with automatic model fallbacks."""
     client = get_hf_client()
-    try:
-        response = client.chat_completion(
-            model=LLM_MODEL_ID,
-            messages=messages,
-            max_tokens=max_new_tokens,
-            temperature=0.2,
-        )
-        content = response.choices[0].message.content
-        return content.strip() if content else ""
-    except Exception as exc:
-        print(f"Error calling Hugging Face chat completion: {exc}")
-        token = os.getenv("HF_TOKEN")
-        if not token:
-            raise ValueError(
-                "HF_TOKEN environment variable is missing. Please add your free Hugging Face token."
-            ) from exc
-        raise
+    last_exc = None
+
+    models_to_try = list(dict.fromkeys([m for m in FALLBACK_MODELS if m]))
+
+    for model_name in models_to_try:
+        try:
+            response = client.chat_completion(
+                model=model_name,
+                messages=messages,
+                max_tokens=max_new_tokens,
+                temperature=0.2,
+            )
+            content = response.choices[0].message.content
+            if content:
+                return content.strip()
+        except Exception as exc:
+            last_exc = exc
+            err_str = str(exc)
+            token = os.getenv("HF_TOKEN")
+            if not token:
+                raise ValueError(
+                    "HF_TOKEN environment variable is missing. Please add your free Hugging Face token."
+                ) from exc
+            if "401" in err_str or "Unauthorized" in err_str:
+                raise ValueError("HF_TOKEN is invalid or lacks necessary permissions.") from exc
+            print(f"Model {model_name} failed: {err_str}. Trying next fallback...")
+            continue
+
+    if last_exc:
+        raise last_exc
+    return ""
 
 
 # ============================================================

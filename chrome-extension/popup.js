@@ -353,81 +353,266 @@ function renderSummary(data) {
   sourcesEl.innerHTML = '<div class="source"><strong>Summary generated from the active video transcript.</strong></div>';
 }
 
-async function fetchTranscriptFromActiveTab(videoId) {
+function decodeHtmlEntities(str) {
+  if (!str) return '';
+  const txt = document.createElement('textarea');
+  txt.innerHTML = str;
+  return txt.value;
+}
+
+function parseTranscriptPayload(rawText) {
+  if (!rawText || !rawText.trim()) return [];
+
+  const trimmed = rawText.trim();
+
+  // 1. Check if JSON format (fmt=json3)
+  if (trimmed.startsWith('{')) {
+    try {
+      const data = JSON.parse(trimmed);
+      const events = Array.isArray(data.events) ? data.events : [];
+      const snippets = [];
+      for (const ev of events) {
+        if (!ev.segs) continue;
+        const text = ev.segs.map((s) => s.utf8 || '').join('').trim();
+        if (text && text !== '\n') {
+          const start = (ev.tStartMs || 0) / 1000.0;
+          const dur = (ev.dDurationMs || 0) / 1000.0;
+          snippets.push({ start, duration: dur, text: decodeHtmlEntities(text) });
+        }
+      }
+      if (snippets.length > 0) return snippets;
+    } catch (e) {}
+  }
+
+  // 2. Parse XML format (<transcript><text start="..." dur="...">...</text></transcript>)
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs[0];
-    let baseUrl = null;
-
-    if (tab?.id) {
-      try {
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          func: () => {
-            try {
-              let player = window.ytInitialPlayerResponse;
-              if (!player) {
-                const scripts = Array.from(document.querySelectorAll('script'));
-                for (const s of scripts) {
-                  if (s.textContent && s.textContent.includes('ytInitialPlayerResponse =')) {
-                    const match = s.textContent.match(/ytInitialPlayerResponse\s*=\s*(\{.*?\});/);
-                    if (match) {
-                      try { player = JSON.parse(match[1]); break; } catch (e) {}
-                    }
-                  }
-                }
-              }
-              const tracks = player?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-              if (!tracks || !tracks.length) return null;
-              const track = tracks.find(t => t.languageCode === 'en' || t.languageCode === 'hi') || tracks[0];
-              return track ? track.baseUrl : null;
-            } catch {
-              return null;
-            }
-          },
-        });
-        baseUrl = results?.[0]?.result;
-      } catch (err) {
-        console.warn('executeScript failed, falling back to fetch:', err);
-      }
-    }
-
-    if (!baseUrl && videoId) {
-      const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-      const pageHtml = await pageRes.text();
-      const match = pageHtml.match(/"captionTracks":(\[.*?\])/);
-      if (match) {
-        const tracks = JSON.parse(match[1]);
-        const track = tracks.find(t => t.languageCode === 'en' || t.languageCode === 'hi') || tracks[0];
-        baseUrl = track?.baseUrl;
-      }
-    }
-
-    if (!baseUrl) return null;
-
-    const capRes = await fetch(baseUrl);
-    const xmlText = await capRes.text();
     const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+    const xmlDoc = parser.parseFromString(rawText, 'text/xml');
     const nodes = xmlDoc.getElementsByTagName('text');
-
     const snippets = [];
+
     for (let i = 0; i < nodes.length; i++) {
       const node = nodes[i];
       const start = parseFloat(node.getAttribute('start') || '0');
       const dur = parseFloat(node.getAttribute('dur') || '0');
-      const text = (node.textContent || '')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .trim();
+      const text = decodeHtmlEntities(node.textContent || '').trim();
       if (text) {
         snippets.push({ start, duration: dur, text });
       }
     }
+    return snippets;
+  } catch (e) {
+    console.warn('Failed to parse transcript XML:', e);
+    return [];
+  }
+}
 
+// Injected into YouTube tab to fetch captions directly within YouTube's origin and session
+async function extractTranscriptFromPageContext() {
+  try {
+    // 1. Get player response object (movie_player has freshest data across SPA navigations)
+    let playerResponse = null;
+    const playerEl = document.getElementById('movie_player');
+    if (playerEl && typeof playerEl.getPlayerResponse === 'function') {
+      try {
+        playerResponse = playerEl.getPlayerResponse();
+      } catch (e) {}
+    }
+    if (!playerResponse && window.ytInitialPlayerResponse) {
+      playerResponse = window.ytInitialPlayerResponse;
+    }
+
+    // 2. Extract caption tracks
+    let tracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+
+    // 3. Fallback: search script tags with balanced bracket matching
+    if (!tracks || !tracks.length) {
+      const scripts = document.querySelectorAll('script');
+      for (const s of scripts) {
+        const text = s.textContent || '';
+        const marker = '"captionTracks":';
+        const idx = text.indexOf(marker);
+        if (idx !== -1) {
+          const start = text.indexOf('[', idx);
+          if (start !== -1) {
+            let depth = 0;
+            let inStr = false;
+            let esc = false;
+            for (let i = start; i < text.length; i++) {
+              const c = text[i];
+              if (esc) { esc = false; continue; }
+              if (c === '\\') { esc = true; continue; }
+              if (c === '"') { inStr = !inStr; continue; }
+              if (!inStr) {
+                if (c === '[') depth++;
+                else if (c === ']') {
+                  depth--;
+                  if (depth === 0) {
+                    try {
+                      tracks = JSON.parse(text.substring(start, i + 1));
+                    } catch (e) {}
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (tracks && tracks.length) break;
+      }
+    }
+
+    // 4. If caption tracks found, fetch the timedtext data inside the page
+    if (tracks && tracks.length) {
+      const track = tracks.find((t) => (t.languageCode || '').startsWith('en'))
+                 || tracks.find((t) => (t.languageCode || '').startsWith('hi'))
+                 || tracks[0];
+
+      if (track && track.baseUrl) {
+        // Try standard timedtext fetch (same-origin, includes cookies)
+        try {
+          const res = await fetch(track.baseUrl);
+          if (res.ok) {
+            const body = await res.text();
+            if (body && body.trim().length > 0) {
+              return body;
+            }
+          }
+        } catch (e) {}
+
+        // Fallback: try with &fmt=json3
+        try {
+          const jsonUrl = track.baseUrl + (track.baseUrl.includes('?') ? '&' : '?') + 'fmt=json3';
+          const res2 = await fetch(jsonUrl);
+          if (res2.ok) {
+            const body2 = await res2.text();
+            if (body2 && body2.trim().length > 0) {
+              return body2;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 5. Fallback: check if the YouTube transcript panel is open in the DOM
+    const segs = document.querySelectorAll('ytd-transcript-segment-renderer');
+    if (segs && segs.length > 0) {
+      const items = [];
+      segs.forEach((seg) => {
+        const timeEl = seg.querySelector('.segment-timestamp');
+        const textEl = seg.querySelector('.segment-text');
+        if (textEl && textEl.textContent.trim()) {
+          const timeStr = timeEl ? timeEl.textContent.trim() : '0:00';
+          const parts = timeStr.split(':').map(Number);
+          let sec = 0;
+          if (parts.length === 2) sec = parts[0] * 60 + parts[1];
+          else if (parts.length === 3) sec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+          items.push({ start: sec, duration: 2.0, text: textEl.textContent.trim() });
+        }
+      });
+      if (items.length > 0) {
+        return JSON.stringify({
+          events: items.map((it) => ({
+            tStartMs: it.start * 1000,
+            dDurationMs: it.duration * 1000,
+            segs: [{ utf8: it.text }],
+          })),
+        });
+      }
+    }
+
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function fetchTranscriptFromActiveTab(videoId) {
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0] || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
+
+    let rawPayload = null;
+
+    // Strategy 1: Execute in MAIN world (access to movie_player & window.ytInitialPlayerResponse)
+    if (tab && tab.id) {
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          func: extractTranscriptFromPageContext,
+        });
+        rawPayload = results?.[0]?.result;
+      } catch (err) {
+        console.warn('executeScript in MAIN world failed, trying isolated world:', err);
+      }
+    }
+
+    // Strategy 2: Execute in ISOLATED world (fallback if MAIN world is restricted)
+    if (!rawPayload && tab && tab.id) {
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: extractTranscriptFromPageContext,
+        });
+        rawPayload = results?.[0]?.result;
+      } catch (err) {
+        console.warn('executeScript in isolated world failed:', err);
+      }
+    }
+
+    // Strategy 3: Direct fetch from extension if scripting failed
+    if (!rawPayload && videoId) {
+      try {
+        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+        if (pageRes.ok) {
+          const html = await pageRes.text();
+          const marker = '"captionTracks":';
+          const idx = html.indexOf(marker);
+          if (idx !== -1) {
+            const start = html.indexOf('[', idx);
+            if (start !== -1) {
+              let depth = 0;
+              let inStr = false;
+              let esc = false;
+              for (let i = start; i < html.length; i++) {
+                const c = html[i];
+                if (esc) { esc = false; continue; }
+                if (c === '\\') { esc = true; continue; }
+                if (c === '"') { inStr = !inStr; continue; }
+                if (!inStr) {
+                  if (c === '[') depth++;
+                  else if (c === ']') {
+                    depth--;
+                    if (depth === 0) {
+                      try {
+                        const tracks = JSON.parse(html.substring(start, i + 1));
+                        const track = tracks.find((t) => (t.languageCode || '').startsWith('en'))
+                                   || tracks.find((t) => (t.languageCode || '').startsWith('hi'))
+                                   || tracks[0];
+                        if (track && track.baseUrl) {
+                          const capRes = await fetch(track.baseUrl);
+                          if (capRes.ok) {
+                            rawPayload = await capRes.text();
+                          }
+                        }
+                      } catch (e) {}
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Direct YouTube fetch fallback failed:', err);
+      }
+    }
+
+    if (!rawPayload) return null;
+
+    const snippets = parseTranscriptPayload(rawPayload);
     return snippets.length ? snippets : null;
   } catch (err) {
     console.warn('fetchTranscriptFromActiveTab error:', err);
@@ -457,7 +642,7 @@ async function askQuestion() {
   addToHistory(question);
 
   outputBox.hidden = false;
-  answerText.textContent = 'Reading transcript and generating answer...';
+  answerText.textContent = 'Extracting transcript from YouTube tab...';
   answerText.classList.remove('error-text');
   sourcesEl.innerHTML = '';
 
@@ -466,8 +651,13 @@ async function askQuestion() {
     const snippets = await fetchTranscriptFromActiveTab(videoId);
 
     if (!snippets || snippets.length === 0) {
-      // Warn in the UI but still let the backend try with video_id
-      answerText.textContent = '⚠️ Could not extract transcript from this tab — make sure you are on a YouTube video page with captions enabled. Attempting server-side fetch...';
+      const isCloudHost = !buildApiUrl('').includes('localhost') && !buildApiUrl('').includes('127.0.0.1');
+      if (isCloudHost) {
+        throw new Error('Could not extract transcript from this video. Please make sure subtitles/captions (CC) are available on this video and refresh the YouTube tab.');
+      }
+      answerText.textContent = '⚠️ Could not extract transcript client-side. Attempting server-side fetch...';
+    } else {
+      answerText.textContent = 'Searching transcript and generating answer...';
     }
 
     const body = {
@@ -505,8 +695,9 @@ async function askQuestion() {
     await addConversationEntry(question, finalAnswer, finalSources);
     setStatus(true);
   } catch (error) {
-    const message = error && error.message && error.message.toLowerCase().includes('fetch')
-      ? 'Could not reach backend URL. Please check your backend URL and network connection.'
+    const isNetworkError = error instanceof TypeError;
+    const message = isNetworkError
+      ? 'Could not reach backend URL. Please check your Backend URL field and your network connection.'
       : (error.message || 'Something went wrong.');
 
     answerText.textContent = message;
@@ -527,7 +718,7 @@ async function generateSummary() {
   }
 
   outputBox.hidden = false;
-  answerText.textContent = 'Reading transcript and generating summary...';
+  answerText.textContent = 'Extracting transcript from YouTube tab...';
   answerText.classList.remove('error-text');
   sourcesEl.innerHTML = '';
 
@@ -535,7 +726,13 @@ async function generateSummary() {
     const snippets = await fetchTranscriptFromActiveTab(videoId);
 
     if (!snippets || snippets.length === 0) {
-      answerText.textContent = '⚠️ Could not extract transcript from this tab — make sure you are on a YouTube video page with captions enabled. Attempting server-side fetch...';
+      const isCloudHost = !buildApiUrl('').includes('localhost') && !buildApiUrl('').includes('127.0.0.1');
+      if (isCloudHost) {
+        throw new Error('Could not extract transcript from this video. Please make sure subtitles/captions (CC) are available on this video and refresh the YouTube tab.');
+      }
+      answerText.textContent = '⚠️ Could not extract transcript client-side. Attempting server-side fetch...';
+    } else {
+      answerText.textContent = 'Reading transcript and generating summary...';
     }
 
     const response = await fetch(buildApiUrl('/api/summary'), {
@@ -556,8 +753,9 @@ async function generateSummary() {
     renderSummary(data);
     setStatus(true);
   } catch (error) {
-    const message = error && error.message && error.message.toLowerCase().includes('fetch')
-      ? 'Could not reach backend URL. Please check your backend URL and network connection.'
+    const isNetworkError = error instanceof TypeError;
+    const message = isNetworkError
+      ? 'Could not reach backend URL. Please check your Backend URL field and your network connection.'
       : (error.message || 'Summary failed.');
 
     answerText.textContent = message;
