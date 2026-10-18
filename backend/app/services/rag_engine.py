@@ -19,7 +19,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parents[2]
 TRANSCRIPT_PATH = BASE_DIR / "transcript.txt"
 
-LLM_MODEL_ID = os.getenv("HF_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
+LLM_MODEL_ID = os.getenv("HF_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 EMBEDDING_MODEL_ID = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 TOP_K_CANDIDATES = 4
@@ -244,12 +244,13 @@ def is_summary_question(question: str) -> bool:
 
 FALLBACK_MODELS = [
     LLM_MODEL_ID,
-    "meta-llama/Llama-3.2-3B-Instruct",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "mistralai/Mistral-7B-Instruct-v0.3",
-    "google/gemma-2-2b-it",
-    "HuggingFaceH4/zephyr-7b-beta",
-    "microsoft/Phi-3.5-mini-instruct",
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+    "google/gemma-3-4b-it",
+    "microsoft/phi-4",
+    "Qwen/Qwen2.5-Coder-32B-Instruct",
 ]
 
 

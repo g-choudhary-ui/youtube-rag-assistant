@@ -188,7 +188,13 @@ def chat(request: ChatRequest):
                 "make sure you are on a YouTube video page with captions enabled."
             )
         elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
-            detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
+            detail = "Hugging Face API token is missing or invalid. Please add a valid HF_TOKEN in your Render Environment tab."
+        elif "model_not_supported" in err_msg or "provider" in err_msg:
+            detail = (
+                "Hugging Face Inference Providers are not enabled on your account. "
+                "Please go to https://huggingface.co/settings/tokens, edit your token, "
+                "and ensure 'Make calls to Inference Providers' is checked."
+            )
         else:
             detail = f"RAG processing failed: {err_msg}"
         raise HTTPException(
@@ -298,7 +304,13 @@ def summarize_video(request: SummaryRequest):
                 "make sure you are on a YouTube video page with captions enabled."
             )
         elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
-            detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
+            detail = "Hugging Face API token is missing or invalid. Please add a valid HF_TOKEN in your Render Environment tab."
+        elif "model_not_supported" in err_msg or "provider" in err_msg:
+            detail = (
+                "Hugging Face Inference Providers are not enabled on your account. "
+                "Please go to https://huggingface.co/settings/tokens, edit your token, "
+                "and ensure 'Make calls to Inference Providers' is checked."
+            )
         else:
             detail = f"Summary generation failed: {err_msg}"
         raise HTTPException(
