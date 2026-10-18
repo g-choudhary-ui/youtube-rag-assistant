@@ -69,8 +69,6 @@ def _call_gemini_api(prompt: str, max_output_tokens: int = 250, json_mode: bool 
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": gen_config,
-        # Disable thinking/chain-of-thought to prevent it leaking into output
-        "thinkingConfig": {"thinkingBudget": 0},
     }
 
     last_err: Exception = RuntimeError("Gemini API failed after 3 retries")
