@@ -30,8 +30,6 @@ MAX_COMPRESSION_SENTENCES = 10
 
 _hf_client: InferenceClient | None = None
 _hf_client_lock = threading.Lock()
-_gemini_model = None
-_gemini_lock = threading.Lock()
 
 
 def get_hf_client() -> InferenceClient:
@@ -44,21 +42,36 @@ def get_hf_client() -> InferenceClient:
         return _hf_client
 
 
-def get_gemini_model():
-    """Return a cached Gemini GenerativeModel instance."""
-    global _gemini_model
-    with _gemini_lock:
-        if _gemini_model is None:
-            import google.generativeai as genai
-            api_key = os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise ValueError(
-                    "GEMINI_API_KEY environment variable is missing. "
-                    "Get a free key at https://aistudio.google.com/app/apikey"
-                )
-            genai.configure(api_key=api_key)
-            _gemini_model = genai.GenerativeModel(GEMINI_MODEL_ID)
-        return _gemini_model
+def _call_gemini_api(prompt: str, max_output_tokens: int = 250) -> str:
+    """Call Gemini REST API directly using requests (no SDK required)."""
+    import requests as req
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY environment variable is missing. "
+            "Get a free key at https://aistudio.google.com/app/apikey"
+        )
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL_ID}:generateContent?key={api_key}"
+    )
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": max_output_tokens,
+            "temperature": 0.2,
+        },
+    }
+    response = req.post(url, json=body, timeout=30)
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"Gemini API error {response.status_code}: {response.text[:300]}"
+        )
+    data = response.json()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(f"Unexpected Gemini response format: {data}") from exc
 
 
 # ============================================================
@@ -258,17 +271,15 @@ def is_summary_question(question: str) -> bool:
 
 
 # ============================================================
-# LLM GENERATION VIA GOOGLE GEMINI API (free tier)
+# LLM GENERATION VIA GOOGLE GEMINI REST API (free tier, no SDK)
 # ============================================================
 
 def generate_text(
     messages: list[dict[str, str]],
     max_new_tokens: int = 250,
 ) -> str:
-    """Generate text using Google Gemini API (free tier, 1500 req/day)."""
-    model = get_gemini_model()
-
-    # Convert OpenAI-style messages to Gemini format
+    """Generate text using Google Gemini REST API (free tier, 1500 req/day)."""
+    # Convert OpenAI-style messages to a single prompt for Gemini
     system_parts = []
     user_parts = []
     for msg in messages:
@@ -279,23 +290,12 @@ def generate_text(
         else:
             user_parts.append(content)
 
-    # Combine system prompt with user message
     full_prompt = ""
     if system_parts:
         full_prompt = "\n".join(system_parts) + "\n\n"
     full_prompt += "\n".join(user_parts)
 
-    import google.generativeai as genai
-    response = model.generate_content(
-        full_prompt,
-        generation_config=genai.types.GenerationConfig(
-            max_output_tokens=max_new_tokens,
-            temperature=0.2,
-        ),
-    )
-    if response.text:
-        return response.text.strip()
-    return ""
+    return _call_gemini_api(full_prompt, max_output_tokens=max_new_tokens)
 
 
 # ============================================================
