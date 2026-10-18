@@ -465,10 +465,15 @@ async function askQuestion() {
     const section = readSectionRange();
     const snippets = await fetchTranscriptFromActiveTab(videoId);
 
+    if (!snippets || snippets.length === 0) {
+      // Warn in the UI but still let the backend try with video_id
+      answerText.textContent = '⚠️ Could not extract transcript from this tab — make sure you are on a YouTube video page with captions enabled. Attempting server-side fetch...';
+    }
+
     const body = {
       question,
       video_id: videoId,
-      ...(snippets ? { transcript_snippets: snippets } : {}),
+      ...(snippets && snippets.length ? { transcript_snippets: snippets } : {}),
       ...(Object.hasOwn(section, 'start') ? { start_time: section.start } : {}),
       ...(Object.hasOwn(section, 'end') ? { end_time: section.end } : {}),
     };
@@ -529,12 +534,16 @@ async function generateSummary() {
   try {
     const snippets = await fetchTranscriptFromActiveTab(videoId);
 
+    if (!snippets || snippets.length === 0) {
+      answerText.textContent = '⚠️ Could not extract transcript from this tab — make sure you are on a YouTube video page with captions enabled. Attempting server-side fetch...';
+    }
+
     const response = await fetch(buildApiUrl('/api/summary'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         video_id: videoId,
-        ...(snippets ? { transcript_snippets: snippets } : {}),
+        ...(snippets && snippets.length ? { transcript_snippets: snippets } : {}),
       }),
     });
 

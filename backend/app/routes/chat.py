@@ -1,5 +1,6 @@
 
 import json
+import logging
 import re
 import tempfile
 from pathlib import Path
@@ -9,6 +10,15 @@ from youtube_transcript_api import YouTubeTranscriptApi
 
 from app.schemas.chat import ChatRequest, ChatResponse, SummaryRequest, SummaryResponse
 from app.services.rag_engine import ask_rag, build_vector_store_for_transcript, clear_vector_store, generate_text
+
+logger = logging.getLogger(__name__)
+
+
+def _get_snippet_attr(snippet, attr: str, default=None):
+    """Read an attribute from either a dict or an object snippet."""
+    if isinstance(snippet, dict):
+        return snippet.get(attr, default)
+    return getattr(snippet, attr, default)
 
 router = APIRouter(prefix="/api", tags=["RAG Chat"])
 
@@ -34,7 +44,7 @@ def _fetch_transcript(video_id: str):
 def _save_video_transcript(video_id: str) -> Path:
     transcript_path = Path(__file__).resolve().parents[2] / "transcript.txt"
     transcript = _fetch_transcript(video_id)
-    transcript_text = " ".join(snippet.text for snippet in transcript)
+    transcript_text = " ".join(_get_snippet_attr(s, "text", "") for s in transcript)
     transcript_path.write_text(transcript_text, encoding="utf-8")
     return transcript_path
 
@@ -54,8 +64,8 @@ def _filter_transcript_by_range(transcript, start_time: float | None = None, end
 
     filtered = []
     for snippet in transcript:
-        snippet_start = float(getattr(snippet, "start", 0) or 0)
-        snippet_end = snippet_start + float(getattr(snippet, "duration", 0) or 0)
+        snippet_start = float(_get_snippet_attr(snippet, "start", 0) or 0)
+        snippet_end = snippet_start + float(_get_snippet_attr(snippet, "duration", 0) or 0)
 
         if start_time is not None and snippet_end < float(start_time):
             continue
@@ -71,7 +81,7 @@ def _write_section_transcript(transcript, start_time: float | None = None, end_t
     if not selected:
         raise ValueError("No transcript content found in the selected time range.")
 
-    section_text = " ".join(snippet.text for snippet in selected)
+    section_text = " ".join(_get_snippet_attr(s, "text", "") for s in selected if _get_snippet_attr(s, "text", ""))
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as temp_file:
         temp_file.write(section_text)
         temp_path = Path(temp_file.name)
@@ -119,6 +129,11 @@ def _save_custom_transcript(text: str) -> Path:
     return transcript_path
 
 
+def _snippets_to_text(snippets) -> str:
+    """Convert a list of transcript snippets (dicts or objects) to plain text."""
+    return " ".join(_get_snippet_attr(s, "text", "") for s in snippets if _get_snippet_attr(s, "text", ""))
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
     try:
@@ -127,22 +142,32 @@ def chat(request: ChatRequest):
 
         if request.transcript_snippets:
             transcript = request.transcript_snippets
-            text = " ".join(s.text for s in request.transcript_snippets)
+            # Snippets can be dicts (from Chrome extension) or pydantic models
+            text = _snippets_to_text([
+                s.model_dump() if hasattr(s, 'model_dump') else (s if isinstance(s, dict) else vars(s))
+                for s in request.transcript_snippets
+            ])
+            if not text.strip():
+                raise ValueError("Transcript snippets contained no text content.")
+            logger.info("Using client-side transcript snippets (%d items)", len(request.transcript_snippets))
             transcript_path = _save_custom_transcript(text)
         elif request.transcript_text:
             text = request.transcript_text
             transcript_path = _save_custom_transcript(text)
         elif request.video_id:
+            logger.info("Fetching transcript server-side for video_id=%s", request.video_id)
             transcript = _fetch_transcript(request.video_id)
             transcript_path = _save_video_transcript(request.video_id)
 
-        if transcript and (request.start_time is not None or request.end_time is not None):
+        if transcript is not None and (request.start_time is not None or request.end_time is not None):
             section_path = _write_section_transcript(transcript, request.start_time, request.end_time)
             transcript_path = section_path
 
-        if transcript_path:
-            clear_vector_store()
-            build_vector_store_for_transcript(transcript_path)
+        if not transcript_path:
+            raise ValueError("No transcript source provided. Please open a YouTube video with captions enabled.")
+
+        clear_vector_store()
+        build_vector_store_for_transcript(transcript_path)
 
         result = ask_rag(request.question)
         return ChatResponse(**result)
@@ -154,11 +179,14 @@ def chat(request: ChatRequest):
         ) from exc
 
     except Exception as exc:
-        import logging
-        logging.exception("RAG processing failed")
+        logger.exception("RAG processing failed")
         err_msg = str(exc)
-        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg:
-            detail = "This YouTube video has no captions/subtitles available. Please try a video with CC/subtitles enabled."
+        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg or "IpBlocked" in err_msg or "RequestBlocked" in err_msg:
+            detail = (
+                "Could not fetch transcript from YouTube servers (IP may be blocked on this host). "
+                "The Chrome extension will automatically send the transcript from your browser — "
+                "make sure you are on a YouTube video page with captions enabled."
+            )
         elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
             detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
         else:
@@ -174,22 +202,29 @@ def summarize_video(request: SummaryRequest):
     try:
         transcript = None
         if request.transcript_snippets:
-            transcript = request.transcript_snippets
+            # Normalize snippets to plain dicts so all downstream code handles them uniformly
+            transcript = [
+                s.model_dump() if hasattr(s, 'model_dump') else (s if isinstance(s, dict) else vars(s))
+                for s in request.transcript_snippets
+            ]
+            logger.info("Using client-side transcript snippets for summary (%d items)", len(transcript))
         elif request.transcript_text:
-            class TextSnippet:
-                def __init__(self, text):
-                    self.text = text
-                    self.start = 0.0
-            transcript = [TextSnippet(request.transcript_text)]
+            transcript = [{"text": request.transcript_text, "start": 0.0, "duration": 0.0}]
         elif request.video_id:
-            transcript = _fetch_transcript(request.video_id)
+            logger.info("Fetching transcript server-side for summary video_id=%s", request.video_id)
+            raw = _fetch_transcript(request.video_id)
+            transcript = [
+                s if isinstance(s, dict) else {"text": getattr(s, "text", ""), "start": getattr(s, "start", 0.0), "duration": getattr(s, "duration", 0.0)}
+                for s in raw
+            ]
 
         if not transcript:
-            raise ValueError("No transcript found for this video.")
+            raise ValueError("No transcript found for this video. Make sure you are on a YouTube video page with captions enabled.")
 
         evidence = "\n\n".join(
-            f"[{_format_timestamp(getattr(snippet, 'start', 0))}] {snippet.text}"
+            f"[{_format_timestamp(_get_snippet_attr(snippet, 'start', 0))}] {_get_snippet_attr(snippet, 'text', '')}"
             for snippet in transcript[:40]
+            if _get_snippet_attr(snippet, 'text', '')
         )
 
         system_prompt = (
@@ -230,8 +265,8 @@ def summarize_video(request: SummaryRequest):
 
         transcript_entries = []
         for snippet in transcript[:8]:
-            start = getattr(snippet, "start", 0) or 0
-            text = getattr(snippet, "text", "").strip()
+            start = _get_snippet_attr(snippet, "start", 0) or 0
+            text = (_get_snippet_attr(snippet, "text", "") or "").strip()
             if text:
                 transcript_entries.append({
                     "time": _format_timestamp(start),
@@ -254,11 +289,14 @@ def summarize_video(request: SummaryRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        import logging
-        logging.exception("Summary generation failed")
+        logger.exception("Summary generation failed")
         err_msg = str(exc)
-        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg:
-            detail = "This YouTube video has no captions/subtitles available. Please try a video with CC/subtitles enabled."
+        if "No transcript" in err_msg or "Could not retrieve a transcript" in err_msg or "IpBlocked" in err_msg or "RequestBlocked" in err_msg:
+            detail = (
+                "Could not fetch transcript from YouTube servers (IP may be blocked on this host). "
+                "The Chrome extension will automatically send the transcript from your browser — "
+                "make sure you are on a YouTube video page with captions enabled."
+            )
         elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
             detail = "Hugging Face API token is missing or invalid. Please add HF_TOKEN in your Render Environment tab."
         else:
