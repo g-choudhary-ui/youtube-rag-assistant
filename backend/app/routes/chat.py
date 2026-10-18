@@ -187,14 +187,13 @@ def chat(request: ChatRequest):
                 "The Chrome extension will automatically send the transcript from your browser — "
                 "make sure you are on a YouTube video page with captions enabled."
             )
-        elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
-            detail = "Hugging Face API token is missing or invalid. Please add a valid HF_TOKEN in your Render Environment tab."
-        elif "model_not_supported" in err_msg or "provider" in err_msg:
+        elif "GEMINI_API_KEY" in err_msg:
             detail = (
-                "Hugging Face Inference Providers are not enabled on your account. "
-                "Please go to https://huggingface.co/settings/tokens, edit your token, "
-                "and ensure 'Make calls to Inference Providers' is checked."
+                "GEMINI_API_KEY is missing. "
+                "Get a free key at https://aistudio.google.com/app/apikey and add it to your Render Environment Variables."
             )
+        elif "API_KEY_INVALID" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
+            detail = "GEMINI_API_KEY is invalid. Please check the key at https://aistudio.google.com/app/apikey and update it in Render."
         else:
             detail = f"RAG processing failed: {err_msg}"
         raise HTTPException(
@@ -303,14 +302,13 @@ def summarize_video(request: SummaryRequest):
                 "The Chrome extension will automatically send the transcript from your browser — "
                 "make sure you are on a YouTube video page with captions enabled."
             )
-        elif "HF_TOKEN" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
-            detail = "Hugging Face API token is missing or invalid. Please add a valid HF_TOKEN in your Render Environment tab."
-        elif "model_not_supported" in err_msg or "provider" in err_msg:
+        elif "GEMINI_API_KEY" in err_msg:
             detail = (
-                "Hugging Face Inference Providers are not enabled on your account. "
-                "Please go to https://huggingface.co/settings/tokens, edit your token, "
-                "and ensure 'Make calls to Inference Providers' is checked."
+                "GEMINI_API_KEY is missing. "
+                "Get a free key at https://aistudio.google.com/app/apikey and add it to your Render Environment Variables."
             )
+        elif "API_KEY_INVALID" in err_msg or "401" in err_msg or "Unauthorized" in err_msg:
+            detail = "GEMINI_API_KEY is invalid. Please check the key at https://aistudio.google.com/app/apikey and update it in Render."
         else:
             detail = f"Summary generation failed: {err_msg}"
         raise HTTPException(

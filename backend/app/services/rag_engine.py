@@ -19,27 +19,46 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parents[2]
 TRANSCRIPT_PATH = BASE_DIR / "transcript.txt"
 
-LLM_MODEL_ID = os.getenv("HF_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+# Gemini model for LLM generation (free tier)
+GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+# HF only used for embeddings (with lexical fallback if it fails)
 EMBEDDING_MODEL_ID = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 TOP_K_CANDIDATES = 4
 MAX_SUMMARY_DOCUMENTS = 4
 MAX_COMPRESSION_SENTENCES = 10
 
-_client: InferenceClient | None = None
-_client_lock = threading.Lock()
+_hf_client: InferenceClient | None = None
+_hf_client_lock = threading.Lock()
+_gemini_model = None
+_gemini_lock = threading.Lock()
 
 
 def get_hf_client() -> InferenceClient:
-    """Return a cached HuggingFace InferenceClient."""
-    global _client
-    with _client_lock:
-        if _client is None:
+    """Return a cached HuggingFace InferenceClient (used only for embeddings)."""
+    global _hf_client
+    with _hf_client_lock:
+        if _hf_client is None:
             token = os.getenv("HF_TOKEN")
-            if not token:
-                print("WARNING: HF_TOKEN is not set. Inference calls will fail without a token.")
-            _client = InferenceClient(api_key=token)
-        return _client
+            _hf_client = InferenceClient(api_key=token)
+        return _hf_client
+
+
+def get_gemini_model():
+    """Return a cached Gemini GenerativeModel instance."""
+    global _gemini_model
+    with _gemini_lock:
+        if _gemini_model is None:
+            import google.generativeai as genai
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "GEMINI_API_KEY environment variable is missing. "
+                    "Get a free key at https://aistudio.google.com/app/apikey"
+                )
+            genai.configure(api_key=api_key)
+            _gemini_model = genai.GenerativeModel(GEMINI_MODEL_ID)
+        return _gemini_model
 
 
 # ============================================================
@@ -239,57 +258,43 @@ def is_summary_question(question: str) -> bool:
 
 
 # ============================================================
-# QWEN GENERATION VIA HUGGING FACE INFERENCE API
+# LLM GENERATION VIA GOOGLE GEMINI API (free tier)
 # ============================================================
-
-FALLBACK_MODELS = [
-    LLM_MODEL_ID,
-    "meta-llama/Llama-3.1-8B-Instruct",
-    "Qwen/Qwen2.5-Coder-7B-Instruct",
-    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-    "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-    "google/gemma-3-4b-it",
-    "microsoft/phi-4",
-    "Qwen/Qwen2.5-Coder-32B-Instruct",
-]
-
 
 def generate_text(
     messages: list[dict[str, str]],
     max_new_tokens: int = 250,
 ) -> str:
-    """Generate text using Hugging Face Inference API with automatic model fallbacks."""
-    client = get_hf_client()
-    last_exc = None
+    """Generate text using Google Gemini API (free tier, 1500 req/day)."""
+    model = get_gemini_model()
 
-    models_to_try = list(dict.fromkeys([m for m in FALLBACK_MODELS if m]))
+    # Convert OpenAI-style messages to Gemini format
+    system_parts = []
+    user_parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            system_parts.append(content)
+        else:
+            user_parts.append(content)
 
-    for model_name in models_to_try:
-        try:
-            response = client.chat_completion(
-                model=model_name,
-                messages=messages,
-                max_tokens=max_new_tokens,
-                temperature=0.2,
-            )
-            content = response.choices[0].message.content
-            if content:
-                return content.strip()
-        except Exception as exc:
-            last_exc = exc
-            err_str = str(exc)
-            token = os.getenv("HF_TOKEN")
-            if not token:
-                raise ValueError(
-                    "HF_TOKEN environment variable is missing. Please add your free Hugging Face token."
-                ) from exc
-            if "401" in err_str or "Unauthorized" in err_str:
-                raise ValueError("HF_TOKEN is invalid or lacks necessary permissions.") from exc
-            print(f"Model {model_name} failed: {err_str}. Trying next fallback...")
-            continue
+    # Combine system prompt with user message
+    full_prompt = ""
+    if system_parts:
+        full_prompt = "\n".join(system_parts) + "\n\n"
+    full_prompt += "\n".join(user_parts)
 
-    if last_exc:
-        raise last_exc
+    import google.generativeai as genai
+    response = model.generate_content(
+        full_prompt,
+        generation_config=genai.types.GenerationConfig(
+            max_output_tokens=max_new_tokens,
+            temperature=0.2,
+        ),
+    )
+    if response.text:
+        return response.text.strip()
     return ""
 
 
