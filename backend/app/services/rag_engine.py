@@ -20,7 +20,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 TRANSCRIPT_PATH = BASE_DIR / "transcript.txt"
 
 # Gemini model for LLM generation (free tier)
-GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL_ID = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 # HF only used for embeddings (with lexical fallback if it fails)
 EMBEDDING_MODEL_ID = os.getenv("HF_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
