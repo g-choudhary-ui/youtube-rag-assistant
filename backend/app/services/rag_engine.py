@@ -483,25 +483,28 @@ def generate_answer(question: str, context: str) -> str:
 
     if is_summary_question(question):
         task = (
-            "Give a concise overview of the actual topics discussed in the transcript evidence. "
+            "Give a clear, concise overview (3-5 sentences) of the actual topics discussed in the transcript evidence. "
             "Mention only topics, concepts, algorithms, examples, or steps supported by the evidence. "
-            "Do not invent unsupported facts. If the evidence does not establish the video's subject, "
-            "reply: Not enough relevant transcript evidence to summarize this video."
+            "Do not invent unsupported facts. "
+            "Write in plain sentences — do NOT use markdown, asterisks, bullet points, or any special formatting."
         )
     else:
         task = (
-            "Answer the question using only the transcript evidence. "
-            "Do not use outside knowledge or guess. If the answer is not supported by the evidence, "
-            "reply exactly: Not mentioned in the transcript."
+            "Answer the question clearly using only the transcript evidence. "
+            "Write 2-4 plain sentences. "
+            "Do not use outside knowledge or guess. "
+            "Do NOT use markdown, asterisks, bullet points, or any special formatting. "
+            "If the answer is not in the evidence, reply exactly: Not mentioned in the transcript."
         )
 
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a strict YouTube transcript question-answering assistant. "
-                "The transcript may be in Hindi while the question is in English. "
-                "Understand the evidence across languages, but do not introduce unsupported facts.\n\n"
+                "You are a YouTube transcript question-answering assistant. "
+                "The transcript may be in Hindi while the question is in English — "
+                "understand the evidence across languages and reply in English. "
+                "CRITICAL: Write only plain text. No markdown. No asterisks. No bullet points. No bold.\n\n"
                 f"INSTRUCTIONS:\n{task}\n\n"
                 f"TRANSCRIPT EVIDENCE:\n{context}"
             ),
@@ -509,8 +512,9 @@ def generate_answer(question: str, context: str) -> str:
         {"role": "user", "content": question},
     ]
 
-    answer = generate_text(messages, max_new_tokens=200)
+    answer = generate_text(messages, max_new_tokens=450)
     return answer if answer else "Not mentioned in the transcript."
+
 
 
 # ============================================================
